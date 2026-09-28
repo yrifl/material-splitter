@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NotebookLM PDF Slicer</title>
-  <!-- Standard CDN links work flawlessly on GitHub Pages HTTPS -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.9/pdf-lib.min.js"></script>
+  <!-- Verified CDN URLs that return application/javascript -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
@@ -43,7 +43,6 @@
   </div>
 
   <script>
-    // Safe storage wrapper
     const memoryStore = {};
     const safeStorage = {
       getItem(key) {
@@ -69,7 +68,6 @@
     const documentsList = document.getElementById('documentsList');
     const downloadZipBtn = document.getElementById('downloadZipBtn');
 
-    // Load saved API key
     apiKeyInput.value = safeStorage.getItem('gemini_api_key') || '';
     apiKeyInput.addEventListener('input', () => {
       safeStorage.setItem('gemini_api_key', apiKeyInput.value.trim());
@@ -79,7 +77,6 @@
       apiKeyInput.value = '';
     });
 
-    // Daily limit tracking
     function getTodayKey() {
       const now = new Date();
       return `gemini_req_${now.getUTCFullYear()}_${now.getUTCMonth()}_${now.getUTCDate()}`;
