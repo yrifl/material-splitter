@@ -4,21 +4,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NotebookLM PDF Slicer</title>
-  <!-- Verified CDN URLs that return application/javascript -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
 
-  <p>
-    Gemini API Key: 
-    <input type="password" id="apiKeyInput" placeholder="Enter AI Studio API key">
-    <button id="clearKeyBtn" type="button">Clear</button>
-  </p>
-
-  <p id="quotaDisplay">
-    Free Tier Usage: 0 / 1500 daily requests (1500 left today | 15 RPM limit)
-  </p>
+  <!-- Hidden automatically when API key is present in localStorage -->
+  <div id="apiKeySection" style="display: none;">
+    <p>
+      Gemini API Key: 
+      <input type="password" id="apiKeyInput" placeholder="Enter AI Studio API key">
+      <button id="saveKeyBtn" type="button">Save</button>
+    </p>
+  </div>
 
   <input type="file" id="fileInput" accept=".pdf" multiple style="display: none;">
 
@@ -56,10 +54,9 @@
       }
     };
 
-    const DAILY_LIMIT = 1500;
+    const apiKeySection = document.getElementById('apiKeySection');
     const apiKeyInput = document.getElementById('apiKeyInput');
-    const clearKeyBtn = document.getElementById('clearKeyBtn');
-    const quotaDisplay = document.getElementById('quotaDisplay');
+    const saveKeyBtn = document.getElementById('saveKeyBtn');
     const fileInput = document.getElementById('fileInput');
     const uploadBtn = document.getElementById('uploadBtn');
     const ratioText = document.getElementById('ratioText');
@@ -68,42 +65,33 @@
     const documentsList = document.getElementById('documentsList');
     const downloadZipBtn = document.getElementById('downloadZipBtn');
 
-    apiKeyInput.value = safeStorage.getItem('gemini_api_key') || '';
-    apiKeyInput.addEventListener('input', () => {
-      safeStorage.setItem('gemini_api_key', apiKeyInput.value.trim());
+    // Only show API key input if not found in localStorage
+    function updateKeyVisibility() {
+      const storedKey = safeStorage.getItem('gemini_api_key');
+      if (storedKey && storedKey.trim() !== '') {
+        apiKeySection.style.display = 'none';
+        apiKeyInput.value = storedKey.trim();
+      } else {
+        apiKeySection.style.display = 'block';
+      }
+    }
+    updateKeyVisibility();
+
+    saveKeyBtn.addEventListener('click', () => {
+      const val = apiKeyInput.value.trim();
+      if (val) {
+        safeStorage.setItem('gemini_api_key', val);
+        updateKeyVisibility();
+      }
     });
-    clearKeyBtn.addEventListener('click', () => {
-      safeStorage.removeItem('gemini_api_key');
-      apiKeyInput.value = '';
-    });
-
-    function getTodayKey() {
-      const now = new Date();
-      return `gemini_req_${now.getUTCFullYear()}_${now.getUTCMonth()}_${now.getUTCDate()}`;
-    }
-
-    function getUsageToday() {
-      return parseInt(safeStorage.getItem(getTodayKey()) || '0', 10);
-    }
-
-    function incrementUsage() {
-      const used = getUsageToday() + 1;
-      safeStorage.setItem(getTodayKey(), used.toString());
-      updateQuotaUI();
-    }
-
-    function updateQuotaUI() {
-      const used = getUsageToday();
-      const left = Math.max(0, DAILY_LIMIT - used);
-      quotaDisplay.textContent = `Free Tier Usage: ${used} / ${DAILY_LIMIT} daily requests (${left} left today | 15 RPM limit)`;
-    }
-    updateQuotaUI();
 
     let processedDocuments = [];
 
     uploadBtn.addEventListener('click', () => {
-      if (!apiKeyInput.value.trim()) {
-        errorText.textContent = 'Please enter your Gemini API Key first.';
+      const key = safeStorage.getItem('gemini_api_key') || apiKeyInput.value.trim();
+      if (!key) {
+        apiKeySection.style.display = 'block';
+        errorText.textContent = 'Please enter and save your Gemini API Key first.';
         return;
       }
       if (typeof PDFLib === 'undefined' || typeof JSZip === 'undefined') {
@@ -118,7 +106,7 @@
       const files = Array.from(e.target.files);
       if (!files || files.length === 0) return;
 
-      const apiKey = apiKeyInput.value.trim();
+      const apiKey = safeStorage.getItem('gemini_api_key') || apiKeyInput.value.trim();
       errorText.textContent = '';
       uploadBtn.disabled = true;
       const totalFiles = files.length;
@@ -150,7 +138,6 @@
           }
 
           const blueprint = await analyzeWithGemini(file.name, totalPages, pdfBase64, apiKey);
-          incrementUsage();
 
           processedDocuments.push({
             id: `${file.name}-${Date.now()}-${i}`,
@@ -221,7 +208,7 @@ Note: pageList is a 0-indexed integer array of the pages to extract.`;
 
       contents.push({ parts });
 
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
 
       const response = await fetch(url, {
         method: 'POST',
