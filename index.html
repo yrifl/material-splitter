@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NotebookLM PDF Slicer</title>
+  <!-- Standard CDN links work flawlessly on GitHub Pages HTTPS -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.9/pdf-lib.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+
+  <p>
+    Gemini API Key: 
+    <input type="password" id="apiKeyInput" placeholder="Enter AI Studio API key">
+    <button id="clearKeyBtn" type="button">Clear</button>
+  </p>
+
+  <p id="quotaDisplay">
+    Free Tier Usage: 0 / 1500 daily requests (1500 left today | 15 RPM limit)
+  </p>
+
+  <input type="file" id="fileInput" accept=".pdf" multiple style="display: none;">
+
+  <p>
+    <button id="uploadBtn" type="button">Upload</button>
+    <span id="ratioText"></span>
+  </p>
+
+  <p id="errorText" style="color: red;"></p>
+
+  <div id="resultsArea" style="display: none;">
+    <p>
+      <button id="downloadZipBtn" type="button">Download All Slices (.zip)</button>
+      <a href="https://notebooklm.google.com" target="_blank" rel="noopener noreferrer">Open NotebookLM</a>
+    </p>
+
+    <p>
+      To add to NotebookLM: Download the zip above, unzip it, and drag the sliced PDF files directly into your NotebookLM Sources panel.
+    </p>
+
+    <div id="documentsList"></div>
+  </div>
+
+  <script>
+    // Safe storage wrapper
+    const memoryStore = {};
+    const safeStorage = {
+      getItem(key) {
+        try { return localStorage.getItem(key); } catch (e) { return memoryStore[key] || null; }
+      },
+      setItem(key, val) {
+        try { localStorage.setItem(key, val); } catch (e) { memoryStore[key] = val; }
+      },
+      removeItem(key) {
+        try { localStorage.removeItem(key); } catch (e) { delete memoryStore[key]; }
+      }
+    };
+
+    const DAILY_LIMIT = 1500;
+    const apiKeyInput = document.getElementById('apiKeyInput');
+    const clearKeyBtn = document.getElementById('clearKeyBtn');
+    const quotaDisplay = document.getElementById('quotaDisplay');
+    const fileInput = document.getElementById('fileInput');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const ratioText = document.getElementById('ratioText');
+    const errorText = document.getElementById('errorText');
+    const resultsArea = document.getElementById('resultsArea');
+    const documentsList = document.getElementById('documentsList');
+    const downloadZipBtn = document.getElementById('downloadZipBtn');
+
+    // Load saved API key
+    apiKeyInput.value = safeStorage.getItem('gemini_api_key') || '';
+    apiKeyInput.addEventListener('input', () => {
+      safeStorage.setItem('gemini_api_key', apiKeyInput.value.trim());
+    });
+    clearKeyBtn.addEventListener('click', () => {
+      safeStorage.removeItem('gemini_api_key');
+      apiKeyInput.value = '';
+    });
+
+    // Daily limit tracking
+    function getTodayKey() {
+      const now = new Date();
+      return `gemini_req_${now.getUTCFullYear()}_${now.getUTCMonth()}_${now.getUTCDate()}`;
+    }
+
+    function getUsageToday() {
+      return parseInt(safeStorage.getItem(getTodayKey()) || '0', 10);
+    }
+
+    function incrementUsage() {
+      const used = getUsageToday() + 1;
+      safeStorage.setItem(getTodayKey(), used.toString());
+      updateQuotaUI();
+    }
+
+    function updateQuotaUI() {
+      const used = getUsageToday();
+      const left = Math.max(0, DAILY_LIMIT - used);
+      quotaDisplay.textContent = `Free Tier Usage: ${used} / ${DAILY_LIMIT} daily requests (${left} left today | 15 RPM limit)`;
+    }
+    updateQuotaUI();
+
+    let processedDocuments = [];
+
+    uploadBtn.addEventListener('click', () => {
+      if (!apiKeyInput.value.trim()) {
+        errorText.textContent = 'Please enter your Gemini API Key first.';
+        return;
+      }
+      if (typeof PDFLib === 'undefined' || typeof JSZip === 'undefined') {
+        errorText.textContent = 'Libraries are still loading. Please wait 3 seconds and click Upload again.';
+        return;
+      }
+      errorText.textContent = '';
+      fileInput.click();
+    });
+
+    fileInput.addEventListener('change', async (e) => {
+      const files = Array.from(e.target.files);
+      if (!files || files.length === 0) return;
+
+      const apiKey = apiKeyInput.value.trim();
+      errorText.textContent = '';
+      uploadBtn.disabled = true;
+      const totalFiles = files.length;
+      let processedCount = 0;
+      ratioText.textContent = ` 0:${totalFiles}`;
+
+      for (let i = 0; i < totalFiles; i++) {
+        const file = files[i];
+
+        try {
+          const buffer = await file.arrayBuffer();
+          let totalPages = 20;
+
+          try {
+            const pdfDoc = await PDFLib.PDFDocument.load(buffer, { ignoreEncryption: true });
+            totalPages = pdfDoc.getPageCount();
+          } catch (e) {
+            totalPages = 20;
+          }
+
+          let pdfBase64 = null;
+          if (buffer.byteLength < 15 * 1024 * 1024) {
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let b = 0; b < bytes.byteLength; b++) {
+              binary += String.fromCharCode(bytes[b]);
+            }
+            pdfBase64 = btoa(binary);
+          }
+
+          const blueprint = await analyzeWithGemini(file.name, totalPages, pdfBase64, apiKey);
+          incrementUsage();
+
+          processedDocuments.push({
+            id: `${file.name}-${Date.now()}-${i}`,
+            fileName: file.name,
+            totalPages,
+            fileBuffer: buffer,
+            manifestText: blueprint.markdownManifest,
+            sections: blueprint.sections
+          });
+        } catch (err) {
+          console.error(`Error processing ${file.name}:`, err);
+          if (err.message && err.message.includes('429')) {
+            errorText.textContent = `Rate limit reached (429: Too Many Requests). Google allows 15 requests per minute on free tier. Please wait 60 seconds and retry.`;
+          } else {
+            errorText.textContent = `Error processing ${file.name}: ${err.message}`;
+          }
+        }
+
+        processedCount++;
+        ratioText.textContent = ` ${processedCount}:${totalFiles}`;
+      }
+
+      uploadBtn.disabled = false;
+      fileInput.value = '';
+      renderDocuments();
+    });
+
+    async function analyzeWithGemini(fileName, totalPages, pdfBase64, apiKey) {
+      const systemInstruction = `Role:
+You are a document mapping and slicing architect. Your goal is to analyze uploaded study materials (PDFs, PPTs, DOCXs) and generate a precise, logical breakdown of the document's contents mapped to exact page/slide ranges, designed so another tool can slice the document into clean, standalone files for NotebookLM.
+
+Core Directives:
+1. Optimized Slicing Blueprint: Map out the document so that every substantive page is accounted for. Bundle related concepts together—even if they are non-sequential or overlapping (e.g., pages 2, 4-5, 9)—into logical sections.
+2. Size Constraints: Aim to bundle related concepts into blocks of roughly 5 to 20 pages per split file. Avoid creating tiny 1–3 page fragments unless a concept is completely isolated, and avoid chunks larger than 20 pages to ensure downstream AI tools can effectively generate rich quiz questions and flashcards.
+3. Fluff Filtering: Completely ignore non-academic filler (e.g., title slides, table of contents, intro/outro slides, memes, "Thank you" pages). Do not assign these pages to any range.
+4. Multi-File Separation: Process files strictly one by one. Create a separate mapping manifest for each uploaded document.
+5. Actionable Naming: Give each section a clear, descriptive file-naming convention so the resulting split files are easy to identify in NotebookLM later.
+
+Output schema (strictly JSON):
+{
+  "markdownManifest": "string (formatted markdown matching your template)",
+  "sections": [
+    {
+      "suggestedFileName": "Topic-Name-Or-Number.pdf",
+      "targetRanges": "Pages 2-10, 14",
+      "sectionObjective": "A brief sentence on what core concepts this split section contains",
+      "pageList": [1, 2, 3, 4, 5, 6, 7, 8, 9, 13]
+    }
+  ]
+}
+Note: pageList is a 0-indexed integer array of the pages to extract.`;
+
+      const contents = [];
+      const parts = [];
+
+      if (pdfBase64) {
+        parts.push({
+          inlineData: {
+            mimeType: 'application/pdf',
+            data: pdfBase64
+          }
+        });
+      }
+
+      parts.push({
+        text: `Analyze document: "${fileName}" with total pages: ${totalPages}. Strictly apply Fluff Filtering and Concept Bundling (5-20 pages per file).`
+      });
+
+      contents.push({ parts });
+
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents,
+          systemInstruction: { parts: [{ text: systemInstruction }] },
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.1
+          }
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error?.message || `Gemini API error ${response.status}`);
+      }
+
+      const data = await response.json();
+      const textOutput = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!textOutput) throw new Error('Gemini returned an empty response');
+
+      const parsed = JSON.parse(textOutput);
+      return {
+        markdownManifest: parsed.markdownManifest || '',
+        sections: parsed.sections || []
+      };
+    }
+
+    async function extractPages(buffer, pageIndices) {
+      const srcDoc = await PDFLib.PDFDocument.load(buffer, { ignoreEncryption: true });
+      const newDoc = await PDFLib.PDFDocument.create();
+      const validIndices = pageIndices.filter(p => p >= 0 && p < srcDoc.getPageCount());
+      const copiedPages = await newDoc.copyPages(srcDoc, validIndices);
+      copiedPages.forEach(page => newDoc.addPage(page));
+      return await newDoc.save();
+    }
+
+    function triggerDownload(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function renderDocuments() {
+      if (processedDocuments.length === 0) {
+        resultsArea.style.display = 'none';
+        return;
+      }
+
+      resultsArea.style.display = 'block';
+      documentsList.innerHTML = '';
+
+      processedDocuments.forEach((doc) => {
+        const div = document.createElement('div');
+
+        const title = document.createElement('p');
+        title.textContent = `${doc.fileName} (${doc.sections.length} slices)`;
+        div.appendChild(title);
+
+        const ul = document.createElement('ul');
+        doc.sections.forEach((sec) => {
+          const li = document.createElement('li');
+          li.textContent = `${sec.suggestedFileName} (${sec.targetRanges}): ${sec.sectionObjective || ''} `;
+
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = 'Download slice';
+          btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            try {
+              const bytes = await extractPages(doc.fileBuffer, sec.pageList);
+              const blob = new Blob([bytes], { type: 'application/pdf' });
+              let fname = sec.suggestedFileName;
+              if (!fname.endsWith('.pdf')) fname += '.pdf';
+              triggerDownload(blob, fname);
+            } catch (err) {
+              alert('Error slicing PDF: ' + err.message);
+            } finally {
+              btn.disabled = false;
+            }
+          });
+
+          li.appendChild(btn);
+          ul.appendChild(li);
+        });
+
+        div.appendChild(ul);
+        documentsList.appendChild(div);
+      });
+    }
+
+    downloadZipBtn.addEventListener('click', async () => {
+      if (processedDocuments.length === 0) return;
+      downloadZipBtn.disabled = true;
+      downloadZipBtn.textContent = 'Slicing & packaging...';
+
+      try {
+        const zip = new JSZip();
+
+        for (const doc of processedDocuments) {
+          const folderName = doc.fileName.replace(/\.[^/.]+$/, '');
+          const folder = processedDocuments.length > 1 ? zip.folder(folderName) : zip;
+
+          if (doc.manifestText) {
+            folder.file('SLICING_MANIFEST.md', doc.manifestText);
+          }
+
+          for (const sec of doc.sections) {
+            const bytes = await extractPages(doc.fileBuffer, sec.pageList);
+            let fname = sec.suggestedFileName;
+            if (!fname.endsWith('.pdf')) fname += '.pdf';
+            folder.file(fname, bytes);
+          }
+        }
+
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        triggerDownload(zipBlob, 'NotebookLM_All_Sliced_Files.zip');
+      } catch (err) {
+        alert('ZIP packaging error: ' + err.message);
+      } finally {
+        downloadZipBtn.disabled = false;
+        downloadZipBtn.textContent = 'Download All Slices (.zip)';
+      }
+    });
+  </script>
+</body>
+</html>
