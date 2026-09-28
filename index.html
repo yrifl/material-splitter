@@ -127,7 +127,6 @@
           }
 
           let pdfBase64 = null;
-          // Keep payload reasonable for faster upload to avoid timeout/demand drops
           if (buffer.byteLength < 12 * 1024 * 1024) {
             const bytes = new Uint8Array(buffer);
             let binary = '';
@@ -161,7 +160,6 @@
       renderDocuments();
     });
 
-    // Uses only currently supported active models: gemini-flash-latest and gemini-3.1-flash-lite
     async function analyzeWithGeminiWithRetry(fileName, totalPages, pdfBase64, apiKey) {
       const activeModels = ['gemini-flash-latest', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'];
       let lastError = null;
@@ -179,7 +177,7 @@
               errorText.textContent = `High traffic on ${model}. Retrying in 2 seconds...`;
               await new Promise(r => setTimeout(r, 2000));
             } else {
-              break; // Switch to next active model
+              break;
             }
           }
         }
@@ -192,25 +190,36 @@
 You are a document mapping and slicing architect. Your goal is to analyze uploaded study materials (PDFs, PPTs, DOCXs) and generate a precise, logical breakdown of the document's contents mapped to exact page/slide ranges, designed so another tool can slice the document into clean, standalone files for NotebookLM.
 
 Core Directives:
-1. Optimized Slicing Blueprint: Map out the document so that every substantive page is accounted for. Bundle related concepts together—even if they are non-sequential or overlapping (e.g., pages 2, 4-5, 9)—into logical sections.
-2. Size Constraints: Aim to bundle related concepts into blocks of roughly 5 to 20 pages per split file. Avoid creating tiny 1–3 page fragments unless a concept is completely isolated, and avoid chunks larger than 20 pages to ensure downstream AI tools can effectively generate rich quiz questions and flashcards.
-3. Fluff Filtering: Completely ignore non-academic filler (e.g., title slides, table of contents, intro/outro slides, memes, "Thank you" pages). Do not assign these pages to any range.
-4. Multi-File Separation: Process files strictly one by one. Create a separate mapping manifest for each uploaded document.
-5. Actionable Naming: Give each section a clear, descriptive file-naming convention so the resulting split files are easy to identify in NotebookLM later.
+1. Optimized Thematic Slicing: Group related concepts together logically.
+2. Jumping & Overlapping Allowed:
+   - Slices CAN jump non-sequentially to omit filler or grab isolated related slides (e.g., slides 1-10 & 12 -> 11 slides total).
+   - Slices CAN overlap if a concept requires shared context across files (e.g., Slice 1: 1-15 [15 slides], Slice 2: 10-25 [15 slides]).
+3. Strict Size Limits:
+   - MAXIMUM 15 total slides/pages per slice (pageList.length <= 15).
+   - Never exceed 15 pages in any single section. Aim for 5 to 15 pages per section.
+4. Fluff Filtering: Completely ignore non-academic filler (e.g., title slides, table of contents, intro/outro slides, memes, "Thank you" pages). Do not assign these pages to any range.
+5. Strict Actionable Naming:
+   - The suggested file name MUST include the descriptive title AND the exact slide/page numbers inside parentheses.
+   - Format: [Descriptive_Title] ([Page/Slide Numbers]).pdf
+   - Examples:
+     * Thyroid_Gland_Histology (1-10 & 12).pdf
+     * Endocrine_Regulation (1-15).pdf
+     * Adrenal_Hormones_Feedback (10-25).pdf
+     * Pituitary_Hypothalamus_Axis (2, 4-7, 11).pdf
 
 Output schema (strictly JSON):
 {
-  "markdownManifest": "string (formatted markdown matching your template)",
+  "markdownManifest": "string (formatted markdown matching the template)",
   "sections": [
     {
-      "suggestedFileName": "Topic-Name-Or-Number.pdf",
-      "targetRanges": "Pages 2-10, 14",
+      "suggestedFileName": "Descriptive_Title (1-10 & 12).pdf",
+      "targetRanges": "Slides 1-10, 12",
       "sectionObjective": "A brief sentence on what core concepts this split section contains",
-      "pageList": [1, 2, 3, 4, 5, 6, 7, 8, 9, 13]
+      "pageList": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11]
     }
   ]
 }
-Note: pageList is a 0-indexed integer array of the pages to extract.`;
+Note: pageList is a 0-indexed integer array of the pages to extract, and pageList.length MUST NOT exceed 15.`;
 
       const contents = [];
       const parts = [];
@@ -225,7 +234,7 @@ Note: pageList is a 0-indexed integer array of the pages to extract.`;
       }
 
       parts.push({
-        text: `Analyze document: "${fileName}" with total pages: ${totalPages}. Strictly apply Fluff Filtering and Concept Bundling (5-20 pages per file).`
+        text: `Analyze document: "${fileName}" with total pages: ${totalPages}. Strictly apply Fluff Filtering, allow jumping & overlapping where beneficial, enforce MAXIMUM 15 pages per slice, and name with format "[Title] ([Slides]).pdf".`
       });
 
       contents.push({ parts });
