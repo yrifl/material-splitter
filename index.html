@@ -347,8 +347,8 @@ Note: pageList is a 0-indexed integer array of the pages to extract, and pageLis
         const zip = new JSZip();
 
         for (const doc of processedDocuments) {
-          const folderName = doc.fileName.replace(/\.[^/.]+$/, '');
-          const folder = processedDocuments.length > 1 ? zip.folder(folderName) : zip;
+          const baseName = doc.fileName.replace(/\.[^/.]+$/, '');
+          const folder = processedDocuments.length > 1 ? zip.folder(baseName) : zip;
 
           if (doc.manifestText) {
             folder.file('SLICING_MANIFEST.md', doc.manifestText);
@@ -362,8 +362,18 @@ Note: pageList is a 0-indexed integer array of the pages to extract, and pageLis
           }
         }
 
+        // Generate custom zip filename based on the uploaded PDF
+        let zipName = 'Slices of Documents.zip';
+        if (processedDocuments.length === 1) {
+          const singleBaseName = processedDocuments[0].fileName.replace(/\.[^/.]+$/, '');
+          zipName = `Slices of ${singleBaseName}.zip`;
+        } else if (processedDocuments.length > 1) {
+          const firstBaseName = processedDocuments[0].fileName.replace(/\.[^/.]+$/, '');
+          zipName = `Slices of ${firstBaseName} and ${processedDocuments.length - 1} more.zip`;
+        }
+
         const zipBlob = await zip.generateAsync({ type: 'blob' });
-        triggerDownload(zipBlob, 'NotebookLM_All_Sliced_Files.zip');
+        triggerDownload(zipBlob, zipName);
       } catch (err) {
         alert('ZIP packaging error: ' + err.message);
       } finally {
