@@ -114,6 +114,7 @@
 
       for (let i = 0; i < totalFiles; i++) {
         const file = files[i];
+        const docNum = i + 1; // 1-based index for the document
 
         try {
           const buffer = await file.arrayBuffer();
@@ -138,13 +139,43 @@
 
           const blueprint = await analyzeWithGeminiWithRetry(file.name, totalPages, pdfBase64, apiKey);
 
+          // Format each section name with docNum_sliceNum_ (e.g. 01_01_Title (1-10).pdf)
+          const formattedSections = (blueprint.sections || []).map((sec, secIdx) => {
+            const sliceNum = secIdx + 1;
+            const docPrefix = String(docNum).padStart(2, '0');
+            const slicePrefix = String(sliceNum).padStart(2, '0');
+
+            // Clean title: remove any leading numbers or .pdf extension from suggestedFileName
+            let cleanTitle = (sec.suggestedFileName || 'Section')
+              .replace(/\.pdf$/i, '')
+              .replace(/^[\d_-]+/, '')
+              .replace(/\s*\([^)]*\)\s*$/, '') // remove any existing parens
+              .trim();
+
+            if (!cleanTitle) cleanTitle = 'Section';
+
+            // Extract ranges string (e.g., "1-10 & 12")
+            let ranges = sec.targetRanges || '';
+            ranges = ranges.replace(/^(pages|slides)\s*/i, '').trim();
+
+            const finalFileName = ranges 
+              ? `${docPrefix}_${slicePrefix}_${cleanTitle} (${ranges}).pdf`
+              : `${docPrefix}_${slicePrefix}_${cleanTitle}.pdf`;
+
+            return {
+              ...sec,
+              suggestedFileName: finalFileName
+            };
+          });
+
           processedDocuments.push({
             id: `${file.name}-${Date.now()}-${i}`,
+            docNum,
             fileName: file.name,
             totalPages,
             fileBuffer: buffer,
             manifestText: blueprint.markdownManifest,
-            sections: blueprint.sections
+            sections: formattedSections
           });
         } catch (err) {
           console.error(`Error processing ${file.name}:`, err);
@@ -193,27 +224,20 @@ Core Directives:
 1. Optimized Thematic Slicing: Group related concepts together logically.
 2. Jumping & Overlapping Allowed:
    - Slices CAN jump non-sequentially to omit filler or grab isolated related slides (e.g., slides 1-10 & 12 -> 11 slides total).
-   - Slices CAN overlap if a concept requires shared context across files (e.g., Slice 1: 1-15 [15 slides], Slice 2: 10-25 [15 slides]).
+   - Slices CAN overlap if a concept requires shared context across files (e.g., Slice 1: 1-15, Slice 2: 10-25).
 3. Strict Size Limits:
    - MAXIMUM 15 total slides/pages per slice (pageList.length <= 15).
    - Never exceed 15 pages in any single section. Aim for 5 to 15 pages per section.
 4. Fluff Filtering: Completely ignore non-academic filler (e.g., title slides, table of contents, intro/outro slides, memes, "Thank you" pages). Do not assign these pages to any range.
-5. Strict Actionable Naming:
-   - The suggested file name MUST include the descriptive title AND the exact slide/page numbers inside parentheses.
-   - Format: [Descriptive_Title] ([Page/Slide Numbers]).pdf
-   - Examples:
-     * Thyroid_Gland_Histology (1-10 & 12).pdf
-     * Endocrine_Regulation (1-15).pdf
-     * Adrenal_Hormones_Feedback (10-25).pdf
-     * Pituitary_Hypothalamus_Axis (2, 4-7, 11).pdf
+5. Descriptive Title: Provide a descriptive topic title for each section.
 
 Output schema (strictly JSON):
 {
   "markdownManifest": "string (formatted markdown matching the template)",
   "sections": [
     {
-      "suggestedFileName": "Descriptive_Title (1-10 & 12).pdf",
-      "targetRanges": "Slides 1-10, 12",
+      "suggestedFileName": "Descriptive_Title",
+      "targetRanges": "1-10 & 12",
       "sectionObjective": "A brief sentence on what core concepts this split section contains",
       "pageList": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11]
     }
@@ -234,7 +258,7 @@ Note: pageList is a 0-indexed integer array of the pages to extract, and pageLis
       }
 
       parts.push({
-        text: `Analyze document: "${fileName}" with total pages: ${totalPages}. Strictly apply Fluff Filtering, allow jumping & overlapping where beneficial, enforce MAXIMUM 15 pages per slice, and name with format "[Title] ([Slides]).pdf".`
+        text: `Analyze document: "${fileName}" with total pages: ${totalPages}. Strictly apply Fluff Filtering, allow jumping & overlapping where beneficial, enforce MAXIMUM 15 pages per slice.`
       });
 
       contents.push({ parts });
@@ -303,13 +327,13 @@ Note: pageList is a 0-indexed integer array of the pages to extract, and pageLis
         const div = document.createElement('div');
 
         const title = document.createElement('p');
-        title.textContent = `${doc.fileName} (${doc.sections.length} slices)`;
+        title.textContent = `Document ${doc.docNum}: ${doc.fileName} (${doc.sections.length} slices)`;
         div.appendChild(title);
 
         const ul = document.createElement('ul');
         doc.sections.forEach((sec) => {
           const li = document.createElement('li');
-          li.textContent = `${sec.suggestedFileName} (${sec.targetRanges}): ${sec.sectionObjective || ''} `;
+          li.textContent = `${sec.suggestedFileName}: ${sec.sectionObjective || ''} `;
 
           const btn = document.createElement('button');
           btn.type = 'button';
@@ -362,7 +386,6 @@ Note: pageList is a 0-indexed integer array of the pages to extract, and pageLis
           }
         }
 
-        // Generate custom zip filename based on the uploaded PDF
         let zipName = 'Slices of Documents.zip';
         if (processedDocuments.length === 1) {
           const singleBaseName = processedDocuments[0].fileName.replace(/\.[^/.]+$/, '');
